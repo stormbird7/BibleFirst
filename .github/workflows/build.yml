@@ -1,1 +1,64 @@
+name: Build APK
 
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Unzip project
+        run: |
+          ZIP=$(ls *.zip | LC_ALL=C sort | head -n 1)
+          echo "Using $ZIP"
+          rm -rf src && mkdir src && unzip -q "$ZIP" -d src
+          DIR=$(dirname "$(find src -name settings.gradle.kts | head -n 1)")
+          echo "PROJECT_DIR=$DIR" >> "$GITHUB_ENV"
+
+      - name: Load the signing key from secrets
+        env:
+          RF_KEYSTORE_B64: ${{ secrets.RF_KEYSTORE_B64 }}
+          RF_PASSWORD: ${{ secrets.RF_PASSWORD }}
+        run: |
+          if [ -z "$RF_KEYSTORE_B64" ] || [ -z "$RF_PASSWORD" ]; then
+            echo "::error::The secrets RF_KEYSTORE_B64 and RF_PASSWORD are missing. Add them in Settings > Secrets and variables > Actions."
+            exit 1
+          fi
+          echo "$RF_KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/readfirst.keystore"
+          echo "RF_KEYSTORE=$RUNNER_TEMP/readfirst.keystore" >> "$GITHUB_ENV"
+          echo "::add-mask::$RF_PASSWORD"
+          echo "RF_PASSWORD=$RF_PASSWORD" >> "$GITHUB_ENV"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.9
+
+      - name: Build app
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: gradle assembleDebug --no-daemon
+
+      - name: Name the file
+        run: cp "$PROJECT_DIR/app/build/outputs/apk/debug/app-debug.apk" ReadFirst.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ReadFirst-apk
+          path: ReadFirst.apk
+
+      - name: Update the download link
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete app --yes --cleanup-tag || true
+          gh release create app ReadFirst.apk --title "Read First" --notes "Tap ReadFirst.apk to download and install." --latest
